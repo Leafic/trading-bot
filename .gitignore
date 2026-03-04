@@ -1,0 +1,16 @@
+# 환경 변수 (절대 커밋 금지)
+.env
+
+# 런타임 상태 파일
+status.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/

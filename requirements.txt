@@ -1,0 +1,7 @@
+mojito2
+ta
+requests
+pandas
+python-dotenv
+streamlit
+psutil
