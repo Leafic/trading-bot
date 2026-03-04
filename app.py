@@ -32,6 +32,8 @@ try:
         market_closed_reason,
     )
     from strategy import check_and_alert, RSI_PERIOD
+    from ai_analyst import daily_briefing
+    from telegram_cmd import start_telegram_listener
     from utils import (
         STATUS_FILE,
         load_watchlist,
@@ -68,14 +70,16 @@ def _create_bot_state() -> dict:
     return {
         "lock":       threading.Lock(),
         "stop_event": threading.Event(),
-        "thread":     None,          # threading.Thread | None
+        "thread":     None,          # 봇 메인 스레드
+        "tg_thread":  None,          # 텔레그램 명령어 리스너 스레드
         "shared": {
             "balance":     {},       # 잔고 dict
             "stocks":      {},       # {symbol: {name, price, rsi, ...}}
             "alert_flags": {},       # 중복 알림 방지 플래그
             "logs":        [],       # 실행 로그
             "last_check":  "—",
-            "watch_list":  {},       # 현재 감시 중인 종목 {symbol: {name, target_price, is_holding}}
+            "watch_list":        {},  # 현재 감시 중인 종목 {symbol: {name, target_price, is_holding}}
+            "briefing_done_date": "", # 일일 AI 브리핑 발송 완료 날짜 (YYYY-MM-DD)
         },
     }
 
@@ -93,11 +97,12 @@ def flush_status() -> None:
     shared = _bot_state["shared"]
     with lock:
         data = {
-            "alert_flags": shared["alert_flags"],
-            "last_check":  shared["last_check"],
-            "stocks":      shared["stocks"],
-            "balance":     shared["balance"],
-            "logs":        shared["logs"][-100:],
+            "alert_flags":       shared["alert_flags"],
+            "last_check":        shared["last_check"],
+            "stocks":            shared["stocks"],
+            "balance":           shared["balance"],
+            "logs":              shared["logs"][-100:],
+            "briefing_done_date": shared["briefing_done_date"],
         }
     with open(STATUS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -124,10 +129,17 @@ def bot_loop(stop_event: threading.Event) -> None:
     slog(f"봇 스레드 시작  |  모드: {'모의투자' if IS_MOCK else '실계좌'}")
     slog("=" * 50)
 
-    # 이전 실행에서 저장된 alert_flags 복구
+    # 이전 실행에서 저장된 상태 복구
     with lock:
         if not shared["alert_flags"]:
             shared["alert_flags"] = load_status_flags()
+        # 봇 재시작 시 당일 브리핑 중복 방지를 위해 날짜 복구
+        if not shared["briefing_done_date"] and STATUS_FILE.exists():
+            try:
+                with open(STATUS_FILE, encoding="utf-8") as _f:
+                    shared["briefing_done_date"] = json.load(_f).get("briefing_done_date", "")
+            except Exception:
+                pass
 
     if not send_telegram(f"✅ 트레이딩 알림 봇 시작!\n모드: {'모의투자' if IS_MOCK else '실계좌'}"):
         slog("⚠️  텔레그램 전송 실패 (BOT_TOKEN / CHAT_ID 확인)")
@@ -175,11 +187,35 @@ def bot_loop(stop_event: threading.Event) -> None:
 
         # ── 장 운영 시간 확인 ────────────────────────────────────
         if not is_market_open():
-            reason = market_closed_reason()
-            is_weekend = datetime.now().weekday() >= 5
+            reason     = market_closed_reason()
+            now_dt     = datetime.now()
+            is_weekend = now_dt.weekday() >= 5
             wait_sec   = 3600 if is_weekend else 600
             wait_min   = wait_sec // 60
             flush_status()
+
+            # ── 일일 AI 브리핑 (장 마감 후 16:00~17:00, 평일만, 하루 1회) ──
+            today_str = now_dt.strftime("%Y-%m-%d")
+            if not is_weekend and 16 <= now_dt.hour < 17:
+                with lock:
+                    already_done = shared["briefing_done_date"] == today_str
+                if not already_done:
+                    with lock:
+                        stocks_snap = dict(shared["stocks"])
+                        wl_snap     = dict(shared["watch_list"])
+                    slog("📊 일일 AI 브리핑 생성 중...")
+                    try:
+                        ok = daily_briefing(stocks_snap, wl_snap)
+                        if ok:
+                            with lock:
+                                shared["briefing_done_date"] = today_str
+                            flush_status()
+                            slog("  → 일일 브리핑 텔레그램 발송 완료")
+                        else:
+                            slog("  → 일일 브리핑 발송 실패 (보유 종목 없음 또는 API 오류)")
+                    except Exception as e:
+                        slog(f"  ❌ 일일 브리핑 오류: {e}")
+
             slog(f"장 휴장 중 ({reason}) — 잔고 갱신 완료, 다음 체크: {wait_min}분 후")
             for _ in range(wait_sec):
                 if stop_event.is_set():
@@ -265,10 +301,12 @@ def is_bot_running() -> bool:
 
 
 def start_bot() -> None:
-    """봇 백그라운드 스레드를 시작합니다."""
+    """봇 메인 스레드 + 텔레그램 리스너 스레드를 함께 시작합니다."""
     if is_bot_running():
         return
     _bot_state["stop_event"].clear()
+
+    # 봇 메인 스레드
     t = threading.Thread(
         target=bot_loop,
         args=(_bot_state["stop_event"],),
@@ -277,6 +315,19 @@ def start_bot() -> None:
     )
     t.start()
     _bot_state["thread"] = t
+
+    # 텔레그램 명령어 리스너 스레드 (/잔고, /목록)
+    def _get_snapshot() -> tuple[dict, dict]:
+        """UI 렌더링과 동일한 락 방식으로 공유 상태를 스냅샷합니다."""
+        with _bot_state["lock"]:
+            return (
+                dict(_bot_state["shared"]["balance"]),
+                dict(_bot_state["shared"]["watch_list"]),
+            )
+
+    _bot_state["tg_thread"] = start_telegram_listener(
+        _get_snapshot, _bot_state["stop_event"]
+    )
 
 
 def stop_bot() -> None:
@@ -393,6 +444,8 @@ if _snap_balance:
         st.info("보유 종목이 없습니다.")
 
     st.caption(f"잔고 기준: {_snap_balance.get('last_updated', '—')}")
+    if _snap_balance.get("is_cached"):
+        st.caption("🌙 야간/휴장 시간: 마지막 장 마감 기준 잔고 스냅샷을 표시합니다.")
 else:
     st.info("봇을 시작하면 실시간 잔고가 표시됩니다.")
 
@@ -470,6 +523,8 @@ _RULE_SUFFIX_LABELS = {
     "sniper_bottom": ("C", "🎯 바닥 포착"),
     "volume_surge":  ("D", "🚀 수급 폭발"),
     "dead_cross":    ("E", "⚠️ 데드크로스"),
+    "trailing_stop": ("F", "🛡️ 트레일링 스탑"),
+    "major_buying":  ("G", "🦅 쌍끌이 수급"),
 }
 
 if _snap_alert_flags:
@@ -607,7 +662,9 @@ with st.sidebar:
         "- **B** 목표가 돌파 (설정 시)\n"
         "- **C** 🎯 RSI ≤ 30 + BB하단 이탈\n"
         "- **D** 🚀 거래량 300%↑ + SMA20 돌파\n"
-        "- **E** ⚠️ 데드크로스 + 거래량 증가"
+        "- **E** ⚠️ 데드크로스 + 거래량 증가\n"
+        "- **F** 🛡️ 트레일링 스탑 (목표가 돌파 후)\n"
+        "- **G** 🦅 쌍끌이 수급 (외국인+기관)"
     )
 
     # ── 자동 새로고침 ─────────────────────────────────────────────

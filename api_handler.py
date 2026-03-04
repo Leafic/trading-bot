@@ -4,9 +4,11 @@
 #  장 시간 확인, 에러 방어 로직을 제공합니다.
 # ==============================================================
 
+import json
 import os
 import time
 from datetime import datetime, timedelta, time as dtime
+from pathlib import Path
 
 import mojito
 import pandas as pd
@@ -14,6 +16,8 @@ import requests
 from dotenv import load_dotenv
 
 from utils import _is_token_error, _is_rate_limit
+
+BALANCE_SNAPSHOT_FILE = Path("balance_snapshot.json")
 
 load_dotenv()
 
@@ -65,7 +69,8 @@ def create_broker() -> mojito.KoreaInvestment:
 def get_balance(broker: mojito.KoreaInvestment) -> dict | None:
     """
     잔고를 조회하고 정제된 dict를 반환합니다.
-    야간/휴장 시 API가 비정상 응답을 주면 None을 반환합니다.
+    성공 시 balance_snapshot.json에 저장, 실패 시 스냅샷에서 복구합니다.
+    스냅샷 복구 데이터에는 is_cached=True 플래그가 포함됩니다.
     """
     try:
         resp    = broker.fetch_balance()
@@ -89,7 +94,7 @@ def get_balance(broker: mojito.KoreaInvestment) -> dict | None:
                 "profit_rate":   float(item.get("evlu_erng_rt", 0) or 0),
             })
 
-        return {
+        result = {
             "tot_evlu_amt": int(summary.get("tot_evlu_amt", 0) or 0),
             "pchs_amt":     int(summary.get("pchs_amt_smtl_amt", 0) or 0),
             "profit_amt":   int(summary.get("evlu_pfls_smtl_amt", 0) or 0),
@@ -97,8 +102,29 @@ def get_balance(broker: mojito.KoreaInvestment) -> dict | None:
             "holdings":     holdings,
             "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+
+        # 정상 조회 성공 시 스냅샷 저장 (야간 복구용)
+        try:
+            with open(BALANCE_SNAPSHOT_FILE, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+        return result
+
     except Exception as e:
         print(f"  ⏳ 야간/휴장으로 인한 잔고 조회 대기: {e}")
+
+        # 스냅샷에서 마지막 장 마감 잔고 복구 시도
+        if BALANCE_SNAPSHOT_FILE.exists():
+            try:
+                with open(BALANCE_SNAPSHOT_FILE, encoding="utf-8") as f:
+                    cached = json.load(f)
+                cached["is_cached"] = True
+                return cached
+            except Exception:
+                pass
+
         return None
 
 
