@@ -81,6 +81,13 @@ def _create_bot_state() -> dict:
             "last_check":  "—",
             "watch_list":        {},  # 현재 감시 중인 종목 {symbol: {name, target_price, is_holding}}
             "briefing_done_date": "", # 일일 AI 브리핑 발송 완료 날짜 (YYYY-MM-DD)
+            "daily_pnl": {            # 당일 평가금액 변화 추적
+                "date":       "",
+                "open_amt":   0,      # 오늘 첫 기록 평가금액
+                "cur_amt":    0,      # 현재 평가금액
+                "change_amt": 0,      # cur_amt - open_amt
+                "change_pct": 0.0,    # 변화율 %
+            },
         },
     }
 
@@ -104,6 +111,7 @@ def flush_status() -> None:
             "balance":           shared["balance"],
             "logs":              shared["logs"][-100:],
             "briefing_done_date": shared["briefing_done_date"],
+            "daily_pnl":          shared["daily_pnl"],
         }
     with open(STATUS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -134,11 +142,15 @@ def bot_loop(stop_event: threading.Event) -> None:
     with lock:
         if not shared["alert_flags"]:
             shared["alert_flags"] = load_status_flags()
-        # 봇 재시작 시 당일 브리핑 중복 방지를 위해 날짜 복구
-        if not shared["briefing_done_date"] and STATUS_FILE.exists():
+        # 봇 재시작 시 당일 브리핑 / 일별 수익 복구
+        if STATUS_FILE.exists() and (not shared["briefing_done_date"] or not shared["daily_pnl"]["date"]):
             try:
                 with open(STATUS_FILE, encoding="utf-8") as _f:
-                    shared["briefing_done_date"] = json.load(_f).get("briefing_done_date", "")
+                    _saved = json.load(_f)
+                if not shared["briefing_done_date"]:
+                    shared["briefing_done_date"] = _saved.get("briefing_done_date", "")
+                if not shared["daily_pnl"]["date"]:
+                    shared["daily_pnl"] = _saved.get("daily_pnl", shared["daily_pnl"])
             except Exception:
                 pass
 
@@ -165,6 +177,17 @@ def bot_loop(stop_event: threading.Event) -> None:
             if balance:
                 with lock:
                     shared["balance"] = balance
+                    # 일별 평가금액 변화 추적
+                    _now_date = datetime.now().strftime("%Y-%m-%d")
+                    _tot      = balance.get("tot_evlu_amt", 0)
+                    _pnl      = shared["daily_pnl"]
+                    if _pnl["date"] != _now_date:
+                        _pnl.update({"date": _now_date, "open_amt": _tot,
+                                     "cur_amt": _tot, "change_amt": 0, "change_pct": 0.0})
+                    elif _pnl["open_amt"] > 0:
+                        _pnl["cur_amt"]    = _tot
+                        _pnl["change_amt"] = _tot - _pnl["open_amt"]
+                        _pnl["change_pct"] = _pnl["change_amt"] / _pnl["open_amt"] * 100
                 slog(f"  총 평가: {balance['tot_evlu_amt']:,}원  "
                      f"수익률: {balance['profit_rate']:.2f}%  "
                      f"보유: {len(balance['holdings'])}종목")
@@ -318,12 +341,13 @@ def start_bot() -> None:
     _bot_state["thread"] = t
 
     # 텔레그램 명령어 리스너 스레드 (/잔고, /목록)
-    def _get_snapshot() -> tuple[dict, dict]:
+    def _get_snapshot() -> tuple[dict, dict, dict]:
         """UI 렌더링과 동일한 락 방식으로 공유 상태를 스냅샷합니다."""
         with _bot_state["lock"]:
             return (
                 dict(_bot_state["shared"]["balance"]),
                 dict(_bot_state["shared"]["watch_list"]),
+                dict(_bot_state["shared"]["stocks"]),
             )
 
     _bot_state["tg_thread"] = start_telegram_listener(
@@ -362,6 +386,7 @@ with _bot_state["lock"]:
     _snap_logs        = list(_bot_state["shared"]["logs"])
     _snap_last_check  = _bot_state["shared"]["last_check"]
     _snap_watch_list  = dict(_bot_state["shared"]["watch_list"])
+    _snap_daily_pnl   = dict(_bot_state["shared"]["daily_pnl"])
 
 _bot_running = is_bot_running()
 
@@ -407,7 +432,7 @@ if _snap_balance:
     profit_amt = _snap_balance.get("profit_amt", 0)
     profit_rt  = _snap_balance.get("profit_rate", 0.0)
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2, m3, m4 = st.columns(4)
     with m1:
         st.metric("총 매수금액", f"{pchs_amt:,} 원")
     with m2:
@@ -416,6 +441,16 @@ if _snap_balance:
         sign = "+" if profit_amt >= 0 else ""
         st.metric("총 수익률", f"{profit_rt:.2f} %",
                   delta=f"{sign}{profit_amt:,} 원")
+    with m4:
+        _today_ok  = _snap_daily_pnl.get("date") == datetime.now().strftime("%Y-%m-%d")
+        _d_chg     = _snap_daily_pnl.get("change_amt", 0)
+        _d_pct     = _snap_daily_pnl.get("change_pct", 0.0)
+        _d_sign    = "+" if _d_chg >= 0 else ""
+        st.metric(
+            "오늘 변화",
+            f"{_d_sign}{_d_chg:,} 원" if _today_ok else "—",
+            delta=f"{_d_sign}{_d_pct:.2f}%" if _today_ok else None,
+        )
 
     holdings = _snap_balance.get("holdings", [])
     if holdings:
@@ -524,8 +559,10 @@ _RULE_SUFFIX_LABELS = {
     "sniper_bottom": ("C", "🎯 바닥 포착"),
     "volume_surge":  ("D", "🚀 수급 폭발"),
     "dead_cross":    ("E", "⚠️ 데드크로스"),
-    "trailing_stop": ("F", "🛡️ 트레일링 스탑"),
-    "major_buying":  ("G", "🦅 쌍끌이 수급"),
+    "trailing_stop": ("F",  "🛡️ 트레일링 스탑"),
+    "major_buying":  ("G",  "🦅 쌍끌이 수급"),
+    "golden_cross":  ("H",  "✨ 골든크로스"),
+    "stop_loss":     ("SL", "🔴 손절 경고"),
 }
 
 if _snap_alert_flags:
@@ -591,14 +628,19 @@ with st.sidebar:
             "익절 목표가 (원, 0=미설정)",
             min_value=0, step=100, value=0,
         )
+        sl_in = st.number_input(
+            "손절 목표가 (원, 0=미설정)",
+            min_value=0, step=100, value=0,
+        )
         submitted = st.form_submit_button("+ 추가", use_container_width=True)
 
         if submitted and code_in.strip():
             sym  = code_in.strip()
             nm   = name_in.strip() if name_in.strip() else sym
             tgt  = int(tgt_in) if tgt_in > 0 else None
+            sl   = int(sl_in)  if sl_in  > 0 else None
             wl   = load_watchlist()
-            wl[sym] = {"name": nm, "target_price": tgt}
+            wl[sym] = {"name": nm, "target_price": tgt, "stop_loss_price": sl}
             save_watchlist(wl)
             st.toast(f"{sym} ({nm}) 추가됨", icon="✅")
             st.rerun()
@@ -665,7 +707,9 @@ with st.sidebar:
         "- **D** 🚀 거래량 300%↑ + SMA20 돌파\n"
         "- **E** ⚠️ 데드크로스 + 거래량 증가\n"
         "- **F** 🛡️ 트레일링 스탑 (목표가 돌파 후)\n"
-        "- **G** 🦅 쌍끌이 수급 (외국인+기관)"
+        "- **G** 🦅 쌍끌이 수급 (외국인+기관)\n"
+        "- **H** ✨ 골든크로스 + 거래량 증가\n"
+        "- **SL** 🔴 손절 목표가 이탈 (설정 시)"
     )
 
     # ── 자동 새로고침 ─────────────────────────────────────────────

@@ -1,6 +1,6 @@
 # ==============================================================
 #  strategy.py — 기술적 지표 계산 및 알림 조건 판단
-#  RSI, SMA, 볼린저밴드 기반 7가지 매매 신호를 탐지합니다.
+#  RSI, SMA, 볼린저밴드 기반 9가지 매매 신호를 탐지합니다.
 # ==============================================================
 
 import time
@@ -44,7 +44,7 @@ def calculate_rsi(df: pd.DataFrame, period: int = RSI_PERIOD) -> Optional[float]
 
 
 # ================================================================
-# 알림 체크 로직 (7가지 규칙)
+# 알림 체크 로직 (9가지 규칙)
 # ================================================================
 def check_and_alert(
     broker,
@@ -154,6 +154,26 @@ def check_and_alert(
                     alert_flags[flag_b] = False
                     log(f"  → [Rule B] 목표가 이탈, 플래그 초기화")
 
+        # ── 손절 목표가 (stop_loss_price 설정 종목만) ──────────────────
+        stop_loss_price = info.get("stop_loss_price")
+        if stop_loss_price and stop_loss_price > 0:
+            flag_sl = f"{symbol}_stop_loss"
+            alert_flags.setdefault(flag_sl, False)
+            if current_price <= stop_loss_price:
+                if not alert_flags[flag_sl]:
+                    msg = (
+                        f"🔴 [손절경고] {name} - "
+                        f"손절 목표가({stop_loss_price:,}원) 이탈!\n"
+                        f"리스크 관리가 필요합니다. (현재가: {current_price:,}원)"
+                    )
+                    if send_telegram(msg):
+                        alert_flags[flag_sl] = True
+                        log(f"  → [손절] 손절 경고 알림 발송")
+            else:
+                if alert_flags.get(flag_sl):
+                    alert_flags[flag_sl] = False
+                    log(f"  → [손절] 가격 회복, 플래그 초기화")
+
         # ── Rule F: 🛡️ 트레일링 스탑 (목표가 돌파 후 고점 대비 하락) ────
         if target_price and target_price > 0 and highest_price > target_price:
             flag_f       = f"{symbol}_trailing_stop"
@@ -242,6 +262,30 @@ def check_and_alert(
                     sma5_curr > sma20_curr):
                 alert_flags[flag_e] = False
                 log(f"  → [Rule E] 골든크로스 감지, 플래그 초기화")
+
+        # ── Rule H: ✨ 골든크로스 (SMA5 ↑ SMA20 돌파 + 거래량 증가) ──
+        flag_h = f"{symbol}_golden_cross"
+        alert_flags.setdefault(flag_h, False)
+        golden_cross = (
+            sma5_prev is not None and sma20_prev is not None and
+            sma5_curr is not None and sma20_curr is not None and
+            sma5_prev < sma20_prev and sma5_curr >= sma20_curr
+        )
+        if golden_cross and vol_inc:
+            if not alert_flags[flag_h]:
+                msg = (
+                    f"✨ [골든크로스] {name} - 대량 거래 동반 골든크로스 발생!\n"
+                    f"상승 추세 전환을 기대해 볼 수 있습니다. (현재가: {current_price:,}원)"
+                )
+                if send_telegram(msg):
+                    alert_flags[flag_h] = True
+                    log(f"  → [Rule H] 골든크로스 알림 발송")
+        else:
+            if (alert_flags.get(flag_h) and
+                    sma5_curr is not None and sma20_curr is not None and
+                    sma5_curr < sma20_curr):
+                alert_flags[flag_h] = False
+                log(f"  → [Rule H] 데드크로스 전환, 플래그 초기화")
 
         # ── Rule G: 🦅 쌍끌이 수급 (외국인·기관 동반 순매수) ───────────
         # 두 주체 합산 순매수 ≥ 5일 평균거래량의 5% → 기관+외국인 공동 매집 신호

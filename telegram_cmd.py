@@ -59,6 +59,46 @@ def _format_balance(balance: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_analysis(stocks_data: dict, query: str) -> str:
+    """종목코드 또는 종목명으로 기술적 지표를 조회합니다. 감시 목록 캐시에서 반환합니다."""
+    # 코드로 직접 조회 → 없으면 이름으로 검색
+    data   = stocks_data.get(query)
+    sym    = query
+    if data is None:
+        for s, d in stocks_data.items():
+            if d.get("name", "") == query:
+                data, sym = d, s
+                break
+    if data is None:
+        return (
+            f"'{query}' 종목이 감시 목록에 없습니다.\n"
+            "사이드바에서 추가하면 다음 체크 후 분석 가능합니다."
+        )
+    name     = data.get("name", sym)
+    price    = data.get("price", 0)
+    rsi      = data.get("rsi")
+    sma20    = data.get("sma20")
+    bb_lower = data.get("bb_lower")
+    vol_pct  = data.get("vol_pct")
+    updated  = data.get("last_updated", "—")
+
+    sma20_diff = f"{(price - sma20) / sma20 * 100:+.1f}%" if sma20 else "N/A"
+    rsi_str    = f"{rsi}"
+    if rsi:
+        if rsi <= 30:   rsi_str += " ⚠️ 과매도"
+        elif rsi >= 70: rsi_str += " ⚠️ 과매수"
+    return "\n".join([
+        f"📊 [{name}] ({sym}) 기술적 분석",
+        f"📅 {updated}",
+        "",
+        f"현재가:  {price:,}원",
+        f"RSI(14): {rsi_str}",
+        f"SMA20:   {f'{sma20:,.0f}원 ({sma20_diff})' if sma20 else 'N/A'}",
+        f"BB하단:  {f'{bb_lower:,.0f}원' if bb_lower else 'N/A'}",
+        f"거래량:  {f'{vol_pct:.0f}% (평균대비)' if vol_pct else 'N/A'}",
+    ])
+
+
 def _format_watchlist(watch_list: dict) -> str:
     """감시 종목 dict를 텍스트로 변환합니다."""
     if not watch_list:
@@ -75,12 +115,13 @@ def _format_watchlist(watch_list: dict) -> str:
 # 폴링 루프
 # ================================================================
 def _poll_loop(
-    get_shared_snapshot,          # () -> (balance: dict, watch_list: dict)
+    get_shared_snapshot,          # () -> (balance: dict, watch_list: dict, stocks_data: dict)
     stop_event: threading.Event,
 ) -> None:
     """
     getUpdates 롱폴링으로 명령어를 수신합니다.
     stop_event가 set되면 루프를 종료합니다.
+    지원 명령어: /잔고, /목록, /분석 {종목코드|종목명}
     """
     last_id = 0
     print("[TG] 텔레그램 명령어 리스너 시작")
@@ -105,12 +146,19 @@ def _poll_loop(
                     print(f"[TG] 미등록 발신자 무시: {from_id}")
                     continue
 
-                balance, watch_list = get_shared_snapshot()
+                balance, watch_list, stocks_data = get_shared_snapshot()
 
                 if text == "/잔고":
                     _send(_format_balance(balance))
                 elif text == "/목록":
                     _send(_format_watchlist(watch_list))
+                elif text.startswith("/분석"):
+                    parts = text.split(maxsplit=1)
+                    query = parts[1].strip() if len(parts) > 1 else ""
+                    if query:
+                        _send(_format_analysis(stocks_data, query))
+                    else:
+                        _send("사용법: /분석 {종목코드 또는 종목명}\n예시: /분석 005930")
 
         except Exception as e:
             print(f"  ⚠️ [TG] 폴링 오류: {e}")
@@ -132,7 +180,7 @@ def start_telegram_listener(
 ) -> threading.Thread:
     """
     텔레그램 명령어 리스너 스레드를 시작합니다.
-    get_shared_snapshot: () -> (balance: dict, watch_list: dict) 콜백
+    get_shared_snapshot: () -> (balance: dict, watch_list: dict, stocks_data: dict) 콜백
     """
     t = threading.Thread(
         target=_poll_loop,
