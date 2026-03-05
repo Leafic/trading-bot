@@ -6,3 +6,5 @@ python-dotenv
 streamlit
 psutil
 anthropic
+plotly
+schedule

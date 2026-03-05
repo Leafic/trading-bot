@@ -23,7 +23,7 @@ RSI_OVERSOLD_THRESHOLD = 30
 # 지표 계산
 # ================================================================
 def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """SMA5/20, 거래량 SMA20, 볼린저밴드 하단을 추가합니다."""
+    """SMA5/20/60/120, 거래량 SMA20, 볼린저밴드 상단/중간/하단을 추가합니다."""
     if len(df) < 20:
         return df
     df = df.copy()
@@ -32,6 +32,13 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["vol_sma20"] = df["volume"].rolling(window=20).mean()
     bb = BollingerBands(close=df["close"], window=20, window_dev=2)
     df["bb_lower"]  = bb.bollinger_lband()
+    df["bb_mid"]    = bb.bollinger_mavg()
+    df["bb_upper"]  = bb.bollinger_hband()
+    # 중장기 이동평균 — 데이터가 충분할 때만 계산
+    if len(df) >= 60:
+        df["sma60"]  = SMAIndicator(close=df["close"], window=60).sma_indicator()
+    if len(df) >= 120:
+        df["sma120"] = SMAIndicator(close=df["close"], window=120).sma_indicator()
     return df
 
 
@@ -71,7 +78,8 @@ def check_and_alert(
         target_price = info.get("target_price")
 
         # ── OHLCV + 지표 ──────────────────────────────────────
-        df = get_ohlcv_dataframe(broker, symbol, days=60)
+        # SMA60/120 계산을 위해 최소 120일치 데이터 확보
+        df = get_ohlcv_dataframe(broker, symbol, days=120)
         if df.empty:
             log(f"[{name}] 데이터 조회 실패, 스킵")
             time.sleep(1)
@@ -101,14 +109,17 @@ def check_and_alert(
             highest_price = 0
 
         # ── 지표 값 추출 ────────────────────────────────────────
-        sma5_curr  = safe_float(df["sma5"].iloc[-1])      if "sma5"      in df.columns else None
-        sma20_curr = safe_float(df["sma20"].iloc[-1])     if "sma20"     in df.columns else None
-        bb_lower   = safe_float(df["bb_lower"].iloc[-1])  if "bb_lower"  in df.columns else None
-        vol_sma20  = safe_float(df["vol_sma20"].iloc[-1]) if "vol_sma20" in df.columns else None
-        vol_today  = safe_float(df["volume"].iloc[-1]) or 0
+        sma5_curr   = safe_float(df["sma5"].iloc[-1])      if "sma5"      in df.columns else None
+        sma20_curr  = safe_float(df["sma20"].iloc[-1])     if "sma20"     in df.columns else None
+        sma60_curr  = safe_float(df["sma60"].iloc[-1])     if "sma60"     in df.columns else None
+        sma120_curr = safe_float(df["sma120"].iloc[-1])    if "sma120"    in df.columns else None
+        bb_lower    = safe_float(df["bb_lower"].iloc[-1])  if "bb_lower"  in df.columns else None
+        vol_sma20   = safe_float(df["vol_sma20"].iloc[-1]) if "vol_sma20" in df.columns else None
+        vol_today   = safe_float(df["volume"].iloc[-1]) or 0
 
         sma5_prev  = safe_float(df["sma5"].iloc[-2])   if ("sma5"   in df.columns and len(df) >= 2) else None
         sma20_prev = safe_float(df["sma20"].iloc[-2])  if ("sma20"  in df.columns and len(df) >= 2) else None
+        sma60_prev = safe_float(df["sma60"].iloc[-2])  if ("sma60"  in df.columns and len(df) >= 2) else None
         vol_prev   = safe_float(df["volume"].iloc[-2]) if len(df) >= 2 else None
 
         vol_pct = round((vol_today / vol_sma20) * 100, 1) if (vol_sma20 and vol_sma20 > 0) else None
@@ -121,8 +132,10 @@ def check_and_alert(
             "name":         name,
             "price":        current_price,
             "rsi":          rsi_value,
-            "sma20":        round(sma20_curr, 0) if sma20_curr else None,
-            "bb_lower":     round(bb_lower, 0)   if bb_lower   else None,
+            "sma20":        round(sma20_curr, 0)  if sma20_curr  else None,
+            "sma60":        round(sma60_curr, 0)  if sma60_curr  else None,
+            "sma120":       round(sma120_curr, 0) if sma120_curr else None,
+            "bb_lower":     round(bb_lower, 0)    if bb_lower    else None,
             "vol_pct":      vol_pct,
             "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -287,6 +300,57 @@ def check_and_alert(
                 alert_flags[flag_h] = False
                 log(f"  → [Rule H] 데드크로스 전환, 플래그 초기화")
 
+        # ── Rule I: 🔵 중기 골든크로스 (SMA20 ↑ SMA60) ─────────────────
+        # 단기(20일)선이 중기(60일)선을 상향 돌파 → 중기 상승 전환 신호
+        flag_i = f"{symbol}_mid_golden"
+        alert_flags.setdefault(flag_i, False)
+        mid_golden = (
+            sma20_prev is not None and sma60_prev is not None and
+            sma20_curr is not None and sma60_curr is not None and
+            sma20_prev < sma60_prev and sma20_curr >= sma60_curr
+        )
+        if mid_golden:
+            if not alert_flags[flag_i]:
+                msg = (
+                    f"🔵 [중기 골든크로스] {name} — SMA20이 SMA60을 상향 돌파!\n"
+                    f"중기 상승 추세 전환 가능성이 있습니다. (현재가: {current_price:,}원)"
+                )
+                if send_telegram(msg):
+                    alert_flags[flag_i] = True
+                    log(f"  → [Rule I] 중기 골든크로스 알림 발송")
+        else:
+            if (alert_flags.get(flag_i) and
+                    sma20_curr is not None and sma60_curr is not None and
+                    sma20_curr < sma60_curr):
+                alert_flags[flag_i] = False
+                log(f"  → [Rule I] 중기 데드크로스 전환, 플래그 초기화")
+
+        # ── Rule J: 🟢 장기 지지선 반등 (현재가 SMA120 ±3% + RSI ≤ 45) ──
+        # 120일선(주봉 24주) 근방에서 RSI 저점 → 장기 지지 매수 기회
+        flag_j = f"{symbol}_sma120_support"
+        alert_flags.setdefault(flag_j, False)
+        if sma120_curr is not None and sma120_curr > 0:
+            dist_pct = (current_price - sma120_curr) / sma120_curr * 100
+            sma120_support = -3.0 <= dist_pct <= 3.0 and rsi_value <= 45
+        else:
+            sma120_support = False
+        if sma120_support:
+            if not alert_flags[flag_j]:
+                msg = (
+                    f"🟢 [장기지지] {name} — 120일선({sma120_curr:,.0f}원) 근방 RSI 저점!\n"
+                    f"장기 지지선 반등 가능성이 있습니다. "
+                    f"(현재가: {current_price:,}원, RSI: {rsi_value})"
+                )
+                if send_telegram(msg):
+                    alert_flags[flag_j] = True
+                    log(f"  → [Rule J] 장기지지선 반등 알림 발송")
+        else:
+            if alert_flags.get(flag_j) and (
+                sma120_curr is None or current_price > sma120_curr * 1.05
+            ):
+                alert_flags[flag_j] = False
+                log(f"  → [Rule J] 장기지지 조건 해소, 플래그 초기화")
+
         # ── Rule G: 🦅 쌍끌이 수급 (외국인·기관 동반 순매수) ───────────
         # 두 주체 합산 순매수 ≥ 5일 평균거래량의 5% → 기관+외국인 공동 매집 신호
         flag_g = f"{symbol}_major_buying"
@@ -319,3 +383,74 @@ def check_and_alert(
         time.sleep(1.5)   # Rate Limit 방지
 
     return stocks_data, log_lines
+
+
+# ================================================================
+# 스캘핑 봇 전용 함수
+# ================================================================
+def is_bull_market_filter(df: pd.DataFrame) -> bool:
+    """개별 종목 20일 이동평균이 20일 전보다 높으면 상승 추세로 판단합니다.
+    하락장에서 역추세 매수를 방지하기 위한 최소한의 방어 필터입니다."""
+    if "sma20" not in df.columns or len(df) < 40:
+        return True  # 데이터 부족 시 필터 통과 (너무 보수적으로 걸리지 않도록)
+    sma20_now  = df["sma20"].iloc[-1]
+    sma20_prev = df["sma20"].iloc[-21]  # 20거래일 전
+    if pd.isna(sma20_now) or pd.isna(sma20_prev):
+        return True
+    return float(sma20_now) > float(sma20_prev)
+
+
+def check_scalping_signal_daily(
+    df: pd.DataFrame,
+    rsi_threshold: float = 35.0,
+    stoch_threshold: float = 25.0,
+) -> bool:
+    """당일 종가 기준 3중 조건 체크.
+    1) 종가가 BB 하단선 대비 +2% 이내 접근 또는 이탈
+    2) RSI(14) ≤ rsi_threshold
+    3) Stochastic %K ≤ stoch_threshold
+    Returns: 3가지 조건 모두 충족 시 True"""
+    required = ("close", "bb_lower", "rsi", "stoch_k")
+    for col in required:
+        if col not in df.columns or df[col].empty:
+            return False
+
+    row = df.iloc[-1]
+    if any(pd.isna(row.get(c)) for c in required):
+        return False
+
+    cond_bb    = float(row["close"])   <= float(row["bb_lower"]) * 1.02
+    cond_rsi   = float(row["rsi"])     <= rsi_threshold
+    cond_stoch = float(row["stoch_k"]) <= stoch_threshold
+    return cond_bb and cond_rsi and cond_stoch
+
+
+def check_exit_condition(
+    df: pd.DataFrame,
+    entry_price: float,
+    stoploss_pct: float = 3.5,
+    rsi_exit: float     = 65.0,
+) -> Optional[str]:
+    """당일 데이터 기준으로 청산 조건을 체크합니다.
+    Returns: 청산 사유 문자열 (해당 없으면 None)"""
+    if df.empty:
+        return None
+
+    row = df.iloc[-1]
+    stop_price = entry_price * (1 - stoploss_pct / 100)
+
+    # 손절: 종가가 손절가 이하
+    if float(row.get("close", entry_price)) <= stop_price:
+        return f"손절 -{stoploss_pct:.1f}%"
+
+    # 익절 1: 당일 고가가 BB 상단에 터치
+    if "bb_upper" in df.columns and not pd.isna(row.get("bb_upper")):
+        if float(row.get("high", 0)) >= float(row["bb_upper"]):
+            return "BB 상단 도달 (익절)"
+
+    # 익절 2: RSI 과매수 도달
+    if "rsi" in df.columns and not pd.isna(row.get("rsi")):
+        if float(row["rsi"]) >= rsi_exit:
+            return f"RSI {rsi_exit:.0f} 도달 (익절)"
+
+    return None

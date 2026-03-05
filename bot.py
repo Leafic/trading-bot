@@ -10,7 +10,7 @@ import json
 import time
 import requests
 import pandas as pd
-from datetime import datetime, timedelta, time as dtime
+from datetime import datetime, time as dtime
 from pathlib import Path
 from typing import Optional
 
@@ -189,12 +189,10 @@ def safe_float(val) -> Optional[float]:
 # ================================================================
 # 일봉 OHLCV 조회
 # ================================================================
-def get_ohlcv_dataframe(broker, symbol: str, days: int = 60) -> pd.DataFrame:
-    since = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-
+def get_ohlcv_dataframe(broker, symbol: str) -> pd.DataFrame:
     for attempt in range(3):
         try:
-            resp = broker.fetch_ohlcv(symbol=symbol, timeframe="D", since=since)
+            resp = broker.fetch_ohlcv(symbol=symbol, timeframe="D")
             break
         except Exception as e:
             if _is_token_error(e):
@@ -340,7 +338,7 @@ def check_and_alert(broker, alert_flags: dict, logs: list,
         log(f"\n[{name} ({symbol})]")
 
         # 1. OHLCV 조회 + 지표 계산
-        df = get_ohlcv_dataframe(broker, symbol, days=60)
+        df = get_ohlcv_dataframe(broker, symbol)
         if df.empty:
             log("  → 데이터 조회 실패, 이번 사이클 스킵")
             time.sleep(1)

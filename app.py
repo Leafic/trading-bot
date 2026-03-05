@@ -25,7 +25,8 @@ st.set_page_config(
 try:
     from api_handler import (
         IS_MOCK,
-        create_broker,
+        get_broker,
+        refresh_broker,
         get_balance,
         build_watch_list,
         get_stock_name,
@@ -163,7 +164,7 @@ def bot_loop(stop_event: threading.Event) -> None:
         if broker is None:
             slog("API 연결 중...")
             try:
-                broker = create_broker()
+                broker = get_broker()
                 slog("API 연결 완료")
             except Exception as e:
                 slog(f"⛔ API 초기화 실패: {e} — 60초 후 재시도")
@@ -197,8 +198,8 @@ def bot_loop(stop_event: threading.Event) -> None:
                 holdings = []
         except Exception as e:
             if _is_token_error(e):
-                slog("⚠️  토큰 만료 감지 — 재로그인...")
-                broker = None
+                slog("⚠️  토큰 만료 감지 — 토큰 재발급...")
+                broker = refresh_broker()  # 싱글톤 교체 → 이후 get_broker() 전역 적용
                 time.sleep(5)
                 continue
             elif _is_rate_limit(e):
@@ -253,9 +254,15 @@ def bot_loop(stop_event: threading.Event) -> None:
             extra_wl   = load_watchlist()
             watch_list = build_watch_list(holdings, extra_wl)
 
-            # 2. watchlist 전용 종목 중 이름이 코드인 경우 자동 조회
+            # 2. 이름이 코드이거나 ASCII(영문)인 경우 KIS API로 한국어 이름 자동 조회
+            #    Yahoo Finance 검색으로 추가된 영문 이름도 여기서 한국어로 갱신됩니다.
             for sym, info in watch_list.items():
-                if info["name"] == sym:   # 이름 미입력 → API로 조회
+                cur_name = info["name"]
+                need_update = (
+                    cur_name == sym or                    # 이름 미입력
+                    cur_name.isascii()                    # 영문/숫자만 → 한국어로 교체
+                )
+                if need_update:
                     fetched = get_stock_name(broker, sym)
                     if fetched != sym:
                         info["name"] = fetched
@@ -292,8 +299,8 @@ def bot_loop(stop_event: threading.Event) -> None:
 
         except Exception as e:
             if _is_token_error(e):
-                slog("⚠️  토큰 만료 감지 — 재로그인...")
-                broker = None
+                slog("⚠️  토큰 만료 감지 — 토큰 재발급...")
+                broker = refresh_broker()  # 싱글톤 교체 → 이후 get_broker() 전역 적용
                 time.sleep(5)
                 continue
             elif _is_rate_limit(e):
@@ -619,31 +626,49 @@ with st.sidebar:
     st.header("📋 감시 종목 관리")
     st.caption("계좌 보유 종목은 봇 시작 시 자동으로 추가됩니다.")
 
-    # ── 종목 추가 폼 ─────────────────────────────────────────────
-    with st.form("add_stock_form", clear_on_submit=True):
-        st.markdown("**관심 종목 추가**")
-        code_in = st.text_input("종목코드", placeholder="005930")
-        name_in = st.text_input("종목명 (선택)", placeholder="삼성전자")
-        tgt_in  = st.number_input(
-            "익절 목표가 (원, 0=미설정)",
-            min_value=0, step=100, value=0,
-        )
-        sl_in = st.number_input(
-            "손절 목표가 (원, 0=미설정)",
-            min_value=0, step=100, value=0,
-        )
-        submitted = st.form_submit_button("+ 추가", use_container_width=True)
+    # ── 종목 추가 ─────────────────────────────────────────────────
+    # form_v를 증가시켜 위젯 key를 바꾸면 필드가 초기화됩니다.
+    # (session_state로 위젯 key를 직접 수정하면 Streamlit 오류 발생)
+    if "add_form_v" not in st.session_state:
+        st.session_state["add_form_v"] = 0
+    _fv = st.session_state["add_form_v"]
 
-        if submitted and code_in.strip():
-            sym  = code_in.strip()
-            nm   = name_in.strip() if name_in.strip() else sym
-            tgt  = int(tgt_in) if tgt_in > 0 else None
-            sl   = int(sl_in)  if sl_in  > 0 else None
-            wl   = load_watchlist()
+    st.markdown("**관심 종목 추가**")
+    code_in = st.text_input(
+        "종목코드",
+        placeholder="005930",
+        key=f"add_code_{_fv}",
+    )
+    name_in = st.text_input(
+        "종목명",
+        placeholder="삼성전자",
+        key=f"add_name_{_fv}",
+    )
+    tgt_in = st.number_input(
+        "익절 목표가 (원, 0=미설정)",
+        min_value=0, step=100, value=0,
+        key=f"add_tgt_{_fv}",
+    )
+    sl_in = st.number_input(
+        "손절 목표가 (원, 0=미설정)",
+        min_value=0, step=100, value=0,
+        key=f"add_sl_{_fv}",
+    )
+
+    if st.button("+ 추가", use_container_width=True, type="primary", key="add_submit"):
+        sym = code_in.strip()
+        nm  = name_in.strip() or sym
+        if sym:
+            tgt = int(tgt_in) if tgt_in > 0 else None
+            sl  = int(sl_in)  if sl_in  > 0 else None
+            wl  = load_watchlist()
             wl[sym] = {"name": nm, "target_price": tgt, "stop_loss_price": sl}
             save_watchlist(wl)
             st.toast(f"{sym} ({nm}) 추가됨", icon="✅")
+            st.session_state["add_form_v"] = _fv + 1  # 위젯 key 변경 → 필드 초기화
             st.rerun()
+        else:
+            st.warning("종목코드를 입력해 주세요.")
 
     # ── 현재 감시 리스트 표시 ────────────────────────────────────
     st.divider()

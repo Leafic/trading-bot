@@ -1,1 +1,73 @@
-{}
+{
+  "314130": {
+    "name": "지놈앤컴퍼니",
+    "target_price": 10180,
+    "stop_loss_price": 6000
+  },
+  "272210": {
+    "name": "한화시스템",
+    "target_price": 170000,
+    "stop_loss_price": 140000
+  },
+  "402490": {
+    "name": "그린리소스",
+    "target_price": 14000,
+    "stop_loss_price": 12000
+  },
+  "030520": {
+    "name": "한글과컴퓨터",
+    "target_price": 22000,
+    "stop_loss_price": 20000
+  },
+  "032620": {
+    "name": "유비케어",
+    "target_price": 4500,
+    "stop_loss_price": 3700
+  },
+  "110990": {
+    "name": "디아이티",
+    "target_price": 25000,
+    "stop_loss_price": 19000
+  },
+  "005490": {
+    "name": "포스코홀딩스",
+    "current_price": 390000,
+    "target_price": 429000,
+    "stop_loss_price": 370500
+  },
+  "004020": {
+    "name": "현대제철",
+    "current_price": 36450,
+    "target_price": 40100,
+    "stop_loss_price": 34630
+  },
+  "006800": {
+    "name": "미래에셋증권",
+    "current_price": 10950,
+    "target_price": 12050,
+    "stop_loss_price": 10400
+  },
+  "001510": {
+    "name": "SK증권",
+    "current_price": 1816,
+    "target_price": 1998,
+    "stop_loss_price": 1725
+  },
+  "052400": {
+    "name": "코나아이",
+    "current_price": 55600,
+    "target_price": 61160,
+    "stop_loss_price": 52820
+  },
+  "263750": {
+    "name": "펄어비스",
+    "current_price": 36500,
+    "target_price": 40150,
+    "stop_loss_price": 34675
+  },
+  "034020": {
+    "name": "두산에너빌리티",
+    "target_price": 100000,
+    "stop_loss_price": 80000
+  }
+}
