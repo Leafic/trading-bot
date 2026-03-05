@@ -5,14 +5,16 @@
 
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 import pandas as pd
-from ta.momentum   import RSIIndicator
+from ta.momentum   import RSIIndicator, StochasticOscillator
 from ta.trend      import SMAIndicator
 from ta.volatility import BollingerBands
 
-from api_handler import get_ohlcv_dataframe, get_current_price, get_investor_trend
+from api_handler import (
+    fetch_market_tickers, get_ohlcv_dataframe, get_current_price, get_investor_trend,
+)
 from utils import send_telegram, safe_float
 
 RSI_PERIOD             = 14
@@ -454,3 +456,92 @@ def check_exit_condition(
             return f"RSI {rsi_exit:.0f} 도달 (익절)"
 
     return None
+
+
+def scan_all_stocks_for_signals(
+    broker,
+    rsi_thr: float = 35.0,
+    stoch_thr: float = 25.0,
+    use_bull_filter: bool = True,
+    max_stocks: int = 500,
+    log_fn: Optional[Callable] = None,
+    timeout_at: Optional[datetime] = None,
+) -> list:
+    """KOSPI/KOSDAQ 거래량 상위 종목을 순회하며 3중 진입 조건 충족 종목을 반환합니다.
+    가격 필터(1,000 < 종가 < 200,000원)와 상승장 필터를 적용하며,
+    timeout_at 이후에는 스캔을 조기 중단합니다.
+    Returns: [{"symbol": str, "name": str, "market": str, "rsi": float, "stoch_k": float, "close": float}, ...]"""
+    if log_fn is None:
+        def log_fn(msg: str) -> None:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+    tickers = fetch_market_tickers(max_count=max_stocks)
+    if not tickers:
+        log_fn("전종목 목록 조회 실패 — pykrx 설치 여부 및 네트워크 확인")
+        return []
+
+    candidates: list = []
+    log_fn(f"전종목 스캔 시작 — {len(tickers)}개 종목 대상")
+
+    for i, ticker_info in enumerate(tickers):
+        # 타임아웃 체크 — 15:18 이후 조기 중단
+        if timeout_at is not None and datetime.now() >= timeout_at:
+            log_fn(f"⏰ 스캔 타임아웃 — {i}/{len(tickers)}개 처리 후 중단")
+            break
+
+        symbol = ticker_info["symbol"]
+        name   = ticker_info.get("name", symbol)
+
+        try:
+            df = get_ohlcv_dataframe(broker, symbol, days=120)
+            if df.empty:
+                time.sleep(0.5)
+                continue
+
+            df = calculate_indicators(df)
+
+            # 스토캐스틱 추가 (스캘핑 신호 체크에 필요)
+            if len(df) >= 14:
+                stoch = StochasticOscillator(
+                    high=df["high"], low=df["low"], close=df["close"],
+                    window=14, smooth_window=3,
+                )
+                df["stoch_k"] = stoch.stoch()
+                df["stoch_d"] = stoch.stoch_signal()
+
+            # 가격 필터 (초저가·고가 종목 제외)
+            last_close = float(df["close"].iloc[-1])
+            if not (1000 < last_close < 200000):
+                time.sleep(0.5)
+                continue
+
+            # 상승장 필터
+            if use_bull_filter and not is_bull_market_filter(df):
+                time.sleep(0.5)
+                continue
+
+            # 3중 스캘핑 신호 체크
+            if check_scalping_signal_daily(df, rsi_thr, stoch_thr):
+                last = df.iloc[-1]
+                rsi_val   = round(float(last.get("rsi",     0)), 1)
+                stoch_val = round(float(last.get("stoch_k", 0)), 1)
+                log_fn(
+                    f"  ✅ [{name}({symbol})] 신호! "
+                    f"RSI={rsi_val} Stoch={stoch_val} 종가={last_close:,.0f}"
+                )
+                candidates.append({
+                    "symbol":  symbol,
+                    "name":    name,
+                    "market":  ticker_info.get("market", ""),
+                    "rsi":     rsi_val,
+                    "stoch_k": stoch_val,
+                    "close":   last_close,
+                })
+
+        except Exception as e:
+            log_fn(f"  ⚠️ [{symbol}] 스캔 오류: {e}")
+
+        time.sleep(0.5)  # Rate Limit 방지 (500종목 × 0.5초 ≈ 4분)
+
+    log_fn(f"전종목 스캔 완료 — {len(candidates)}개 종목 신호 발견")
+    return candidates

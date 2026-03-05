@@ -456,6 +456,46 @@ def get_investor_trend(
 # ================================================================
 # 종목명으로 종목코드 검색
 # ================================================================
+def fetch_market_tickers(
+    markets: Optional[list] = None,
+    max_count: int = 500,
+) -> list:
+    """pykrx로 KOSPI/KOSDAQ 거래량 상위 종목 목록을 가져옵니다.
+    6자리 숫자 코드가 아닌 ETF·스팩 등은 자동 제외됩니다.
+    Returns: [{"symbol": str, "name": str, "market": str}, ...]"""
+    try:
+        from pykrx import stock as krx_stock
+    except ImportError:
+        print("  ⚠️  pykrx 미설치 — pip install pykrx")
+        return []
+
+    if markets is None:
+        markets = ["KOSPI", "KOSDAQ"]
+
+    today = datetime.now().strftime("%Y%m%d")
+    per_market = max(1, max_count // len(markets))
+    result: list = []
+
+    for market in markets:
+        try:
+            df_vol = krx_stock.get_market_ohlcv_by_ticker(today, market=market)
+            if df_vol.empty:
+                continue
+            df_vol = df_vol.sort_values("거래량", ascending=False)
+            for ticker in df_vol.head(per_market).index.tolist():
+                if not re.match(r"^\d{6}$", str(ticker)):
+                    continue
+                try:
+                    name = krx_stock.get_market_ticker_name(str(ticker))
+                except Exception:
+                    name = str(ticker)
+                result.append({"symbol": str(ticker), "name": name, "market": market})
+        except Exception as e:
+            print(f"  ⚠️  [{market}] ticker 조회 실패: {e}")
+
+    return result[:max_count]
+
+
 def search_stock_by_name(query: str) -> list:
     """종목명 → 종목코드 후보 목록 반환.
     Yahoo Finance 검색 API로 `.KS`(KOSPI) / `.KQ`(KOSDAQ) 심볼을 받아

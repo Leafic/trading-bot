@@ -8,3 +8,4 @@ psutil
 anthropic
 plotly
 schedule
+pykrx
