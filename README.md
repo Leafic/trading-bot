@@ -309,6 +309,28 @@ streamlit run app.py
 
 > 💡 가상환경 활성화 상태에서는 `python`, `pip` 모두 venv 내부 버전을 사용합니다.
 
+### 5-4. Python 버전 호환성
+
+이 프로젝트는 **Python 3.9 이상**을 지원합니다.
+
+> ⚠️ macOS의 가상환경은 기본적으로 Python 3.9로 생성될 수 있습니다.
+> `X | Y` 유니온 타입 문법은 Python 3.10+에서만 지원되므로, 코드 기여 시 반드시 `Optional[X]` 형태를 사용하세요.
+
+```python
+# ❌ Python 3.10+에서만 동작 (macOS 3.9 환경에서 에러 발생)
+def foo(x: int | None) -> dict | None: ...
+
+# ✅ Python 3.9 이상 호환
+from typing import Optional
+def foo(x: Optional[int]) -> Optional[dict]: ...
+```
+
+Python 버전 확인:
+```bash
+python --version   # Windows (venv 활성화 후)
+python3 --version  # macOS
+```
+
 ---
 
 ## 6. 자주 묻는 질문 (FAQ)

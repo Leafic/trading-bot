@@ -9,6 +9,7 @@ import os
 import time
 from datetime import datetime, timedelta, time as dtime
 from pathlib import Path
+from typing import Optional
 
 import mojito
 import pandas as pd
@@ -66,7 +67,7 @@ def create_broker() -> mojito.KoreaInvestment:
 # ================================================================
 # 잔고 조회
 # ================================================================
-def get_balance(broker: mojito.KoreaInvestment) -> dict | None:
+def get_balance(broker: mojito.KoreaInvestment) -> Optional[dict]:
     """
     잔고를 조회하고 정제된 dict를 반환합니다.
     성공 시 balance_snapshot.json에 저장, 실패 시 스냅샷에서 복구합니다.
@@ -223,7 +224,7 @@ def get_ohlcv_dataframe(
     return df
 
 
-def get_current_price(broker: mojito.KoreaInvestment, symbol: str) -> int | None:
+def get_current_price(broker: mojito.KoreaInvestment, symbol: str) -> Optional[int]:
     """현재가를 조회합니다. Rate Limit 시 3회 재시도합니다."""
     for attempt in range(3):
         try:
@@ -239,7 +240,7 @@ def get_current_price(broker: mojito.KoreaInvestment, symbol: str) -> int | None
 
 def get_investor_trend(
     broker: mojito.KoreaInvestment, symbol: str
-) -> dict | None:
+) -> Optional[dict]:
     """당일 외국인·기관 가집계 순매수량 조회 — 쌍끌이 수급 감지에 필요.
     모의투자 환경에서는 API 미지원으로 None을 반환할 수 있음."""
     try:

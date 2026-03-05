@@ -5,6 +5,7 @@
 
 import time
 from datetime import datetime
+from typing import Optional
 
 import pandas as pd
 from ta.momentum   import RSIIndicator
@@ -34,7 +35,7 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def calculate_rsi(df: pd.DataFrame, period: int = RSI_PERIOD) -> float | None:
+def calculate_rsi(df: pd.DataFrame, period: int = RSI_PERIOD) -> Optional[float]:
     """RSI 값을 계산하여 반환합니다. 데이터 부족 시 None을 반환합니다."""
     if df.empty or "close" not in df.columns or len(df) < period + 1:
         return None

@@ -6,6 +6,7 @@
 import json
 import os
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 import requests
@@ -52,7 +53,7 @@ def _is_rate_limit(e: Exception) -> bool:
 # ================================================================
 # 범용 유틸
 # ================================================================
-def safe_float(val) -> float | None:
+def safe_float(val) -> Optional[float]:
     """NaN·None·변환 불가 값을 안전하게 float으로 변환합니다."""
     try:
         v = float(val)

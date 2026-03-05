@@ -12,6 +12,7 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta, time as dtime
 from pathlib import Path
+from typing import Optional
 
 import mojito
 from ta.momentum   import RSIIndicator
@@ -176,7 +177,7 @@ def _is_rate_limit(e: Exception) -> bool:
     return "429" in s or "too many" in s
 
 
-def safe_float(val) -> float | None:
+def safe_float(val) -> Optional[float]:
     """NaN/None/빈값을 안전하게 float으로 변환합니다."""
     try:
         v = float(val)
@@ -252,7 +253,7 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # ================================================================
 # RSI 계산
 # ================================================================
-def calculate_rsi(df: pd.DataFrame, period: int = RSI_PERIOD) -> float | None:
+def calculate_rsi(df: pd.DataFrame, period: int = RSI_PERIOD) -> Optional[float]:
     if df.empty or "close" not in df.columns or len(df) < period + 1:
         return None
     latest = RSIIndicator(close=df["close"], window=period).rsi().iloc[-1]
@@ -262,7 +263,7 @@ def calculate_rsi(df: pd.DataFrame, period: int = RSI_PERIOD) -> float | None:
 # ================================================================
 # 현재가 조회
 # ================================================================
-def get_current_price(broker, symbol: str) -> int | None:
+def get_current_price(broker, symbol: str) -> Optional[int]:
     for attempt in range(3):
         try:
             return int(broker.fetch_price(symbol)["output"]["stck_prpr"])
@@ -281,7 +282,7 @@ def get_current_price(broker, symbol: str) -> int | None:
 # ================================================================
 # 잔고 조회
 # ================================================================
-def get_balance(broker) -> dict | None:
+def get_balance(broker) -> Optional[dict]:
     """계좌 잔고를 조회하고 정제된 dict를 반환합니다."""
     try:
         resp = broker.fetch_balance()

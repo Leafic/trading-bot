@@ -20,5 +20,12 @@
 - 실행: `streamlit run app.py`
 - 의존성 설치: `pip install -r requirements.txt`
 
+# ⚠️ Python 버전 호환성 (필수)
+- 이 프로젝트는 **Python 3.9 이상**을 지원해야 한다 (macOS 기본 venv가 3.9일 수 있음).
+- **절대 사용 금지**: `X | Y` 유니온 타입 문법 (Python 3.10+에서만 동작)
+  - ❌ `def foo(x: int | None)` → ✅ `def foo(x: Optional[int])`
+  - ❌ `-> dict | None` → ✅ `-> Optional[dict]`
+- 타입 힌트에 `Optional`, `Union`, `List`, `Dict` 등을 사용할 때는 반드시 `from typing import ...`로 임포트할 것.
+
 # 🛠 대규모 작업 전 필수 단계
 - 코드를 대량으로 수정하거나 파일 구조를 변경하기 전, 반드시 "Plan(계획)을 먼저 텍스트로 작성해서 보여달라"고 요청받은 것으로 간주하고 계획부터 출력할 것.

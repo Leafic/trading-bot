@@ -8,6 +8,7 @@ import json
 import threading
 import time
 from datetime import datetime
+from typing import Optional
 
 import pandas as pd
 import streamlit as st
@@ -341,7 +342,7 @@ def stop_bot() -> None:
 # ================================================================
 # Streamlit UI 헬퍼
 # ================================================================
-def rsi_badge(rsi: float | None) -> str:
+def rsi_badge(rsi: Optional[float]) -> str:
     if rsi is None:
         return "—"
     if rsi <= 30:
